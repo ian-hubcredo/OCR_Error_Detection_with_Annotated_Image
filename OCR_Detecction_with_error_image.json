@@ -1,0 +1,393 @@
+{
+  "name": "OCR Detecction with error image",
+  "nodes": [
+    {
+      "parameters": {
+        "resource": "image",
+        "operation": "edit",
+        "prompt": "={{ $json.prompt }}",
+        "images": {
+          "values": [
+            {
+              "binaryPropertyName": "data0"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        -224,
+        -496
+      ],
+      "id": "30814b20-2644-4936-927c-df3e3bc19105",
+      "name": "Edit image as per analysis",
+      "retryOnFail": true,
+      "maxTries": 5,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "<REDACTED_CREDENTIAL_ID>", "name": "<REDACTED_CREDENTIAL_NAME>"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "image",
+        "operation": "analyze",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-3-pro-preview",
+          "mode": "list",
+          "cachedResultName": "models/gemini-3-pro-preview"
+        },
+        "text": "=<prompt> \n<instruction>\n    You are a packaging quality control OCR and language analysis expert.\n    Analyze the packaging image, extract all visible text cleanly (no artifacts, no duplicates, no missing items),\n    and detect every spelling, grammar,spacing  or consistency error or punchutation error or any kind of error found in that text.\n  </instruction>\n\n  <requirements>\n    - Extract every readable word, phrase, number, unit, and symbol from the image.\n    - Include both large and small text (main labels, fine print, legal text, warnings, etc.).\n    - Remove visual noise such as background patterns or partial letters not forming valid text.\n    - Identify all detected errors, describe them briefly, and give corrected versions.\n    - Output must be a valid JSON object starting with { and ending with }.\n    - No markdown, code blocks, or explanations — JSON only.\n  </requirements>\n\n  <output_format>\n    {\n      \"extracted_text\": [\n        \"List of all clean text fragments and words exactly as seen, in reading order\"\n      ],\n      \"errors_and_corrections\": [\n        {\n          \"error_id\": 1,\n          \"found_text\": \"mispelledWord or sentence\",\n          \"error_type\": \"Spelling | Grammar | Consistency\",\n          \"issue_description\": \"Brief explanation of what's wrong\",\n          \"corrected_text\": \"corrected version\",\n          \"location_hint\": \"front panel / warning / fine print\"\n        }\n      ],\n      \"summary\": {\n        \"total_text_items\": 0,\n        \"total_errors_found\": 0,\n        \"spelling_errors\": 0,\n        \"grammar_errors\": 0,\n        \"consistency_errors\": 0,\n        \"confidence_level\": 0,\n        \"spacing error\": 0,\n        \"notes\": \"\"\n      }\n    }\n  </output_format>\n\n  <rules>\n    - Always preserve order of extracted text.\n    - Use lowercase/uppercase as it appears on the packaging.\n    - For repeated text (e.g. slogans/logos), include only once if identical.\n    - Use null or empty arrays if nothing found.\n    - Every key must exist in the final JSON.\n  </rules>\n\n  <start>\n    Begin analysis now. Output only valid JSON — no markdown, no extra text.\n  </start>\n</prompt",
+        "inputType": "binary",
+        "binaryPropertyName": "data0",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        32,
+        -304
+      ],
+      "id": "fedacfea-6b8e-480e-9ea1-2cf6e4aa98a5",
+      "name": "Analyze image1",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "<REDACTED_CREDENTIAL_ID>", "name": "<REDACTED_CREDENTIAL_NAME>"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst extractedText = input.extracted_text.join(\" \");\nconst errorsAndCorrections = input.errors_and_corrections;\n\nreturn [\n  {\n    json: {\n      extractedText,\n      errorsAndCorrections,\n    },\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        368,
+        -304
+      ],
+      "id": "8497d58e-19e2-4598-8038-f4c607161023",
+      "name": "Code in JavaScript2"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code Node: Clean & Normalize OCR Output (embedded in code-fenced JSON)\n\nfunction unwrapCodeFence(s = \"\") {\n  // Extract JSON inside ```json ... ``` or ``` ... ```\n  const fence = s.match(/```(?:json)?\\s*([\\s\\S]*?)```/i);\n  return fence ? fence[1].trim() : s.trim();\n}\n\nfunction safeParse(maybeJson) {\n  try {\n    return typeof maybeJson === \"string\" ? JSON.parse(maybeJson) : maybeJson;\n  } catch (e) {\n    throw new Error(\"Failed to parse embedded JSON: \" + e.message);\n  }\n}\n\nfunction cleanTextArray(arr) {\n  if (!Array.isArray(arr)) return [];\n  // Trim, remove empties, normalize spaces, and dedupe while preserving order\n  const seen = new Set();\n  const out = [];\n  for (const v of arr) {\n    if (typeof v !== \"string\") continue;\n    const t = v.replace(/\\s+/g, \" \").trim();\n    if (!t) continue;\n    if (!seen.has(t)) {\n      seen.add(t);\n      out.push(t);\n    }\n  }\n  return out;\n}\n\nfunction countByType(errors) {\n  const byType = {};\n  for (const e of errors) {\n    const t = (e?.error_type || \"Unknown\").trim();\n    byType[t] = (byType[t] || 0) + 1;\n  }\n  return byType;\n}\n\n// 1) Collect raw text payloads from all incoming items (if multiple)\nconst items = $input.all();\nlet combinedText = \"\";\n\nfor (const item of items) {\n  // Your sample structure: item.json.content.parts[].text\n  const parts = item?.json?.content?.parts;\n  if (Array.isArray(parts)) {\n    for (const p of parts) {\n      if (typeof p?.text === \"string\") combinedText += \"\\n\" + p.text;\n    }\n  } else {\n    // fallback: accept raw json or text in item.json\n    const possible = item?.json?.text || item?.json?.data || item?.json;\n    if (typeof possible === \"string\") combinedText += \"\\n\" + possible;\n  }\n}\n\n// 2) Unwrap code fence and parse JSON\nconst unwrapped = unwrapCodeFence(combinedText);\nconst parsed = safeParse(unwrapped);\n\n// 3) Normalize extracted_text\nconst extracted_text = cleanTextArray(parsed?.extracted_text);\n\n// 4) Keep errors as-is, ensure it's an array\nconst errors_and_corrections = Array.isArray(parsed?.errors_and_corrections)\n  ? parsed.errors_and_corrections\n  : [];\n\n// 5) Totals\nconst totals = {\n  total_text_items: extracted_text.length,\n  total_errors: errors_and_corrections.length,\n  by_type: countByType(errors_and_corrections),\n};\n\n// 6) Pass-through original summary if present\nconst original_summary = parsed?.summary || null;\n\n// 7) Final cleaned output\nreturn [\n  {\n    json: {\n      extracted_text,\n      total_text_items: totals.total_text_items,\n      errors_and_corrections,\n      totals,\n      original_summary,\n    },\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        192,
+        -304
+      ],
+      "id": "d7e0d71b-6212-4cc8-bc02-582931ba1d97",
+      "name": "Extract necessary details1"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1536,
+        -272
+      ],
+      "id": "e76682c3-e543-4365-9e75-48055d594801",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "operation": "binaryToPropery",
+        "binaryPropertyName": "data0",
+        "destinationKey": "databinary",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        1328,
+        -272
+      ],
+      "id": "da66f469-a120-4a1f-abbe-ac3331ae59c1",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "resource": "image",
+        "operation": "edit",
+        "prompt": "={{ $json.editor_prompt }}",
+        "images": {
+          "values": [
+            {
+              "binaryPropertyName": "data0"
+            }
+          ]
+        },
+        "options": {
+          "binaryPropertyOutput": "data0"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        1040,
+        -192
+      ],
+      "id": "9f9eaae3-d452-4221-9bec-21f1b0b35ca8",
+      "name": "Edit image as per analysis1",
+      "retryOnFail": true,
+      "maxTries": 5,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "<REDACTED_CREDENTIAL_ID>", "name": "<REDACTED_CREDENTIAL_NAME>"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Combine all incoming data into a single output object\n\nlet combinedData = {\n  text: [],\n  errors: [],\n  image: []\n};\n\nfor (const item of items) {\n  if (item.json) {\n    if (item.json.extractedText) combinedData.text.push(item.json.extractedText);\n    if (item.json.errorsAndCorrections) combinedData.errors.push(item.json.errorsAndCorrections);\n    if (item.json.databinary) combinedData.image.push(item.json.databinary);\n  }\n}\n\n// Just send the first image/text/errors if there’s only one\nreturn [\n  {\n    json: {\n      text: combinedData.text[0] || null,\n      errors: combinedData.errors[0] || [],\n      image: combinedData.image[0] || null\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1728,
+        -272
+      ],
+      "id": "e6221c94-8ae0-44d1-aeaf-0cd1171f615d",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "jsCode": "let output = {\n  image: null,\n  errors: [],\n   text: \"\"\n};\n\nfor (const item of items) {\n   if (item.json.text) output.text = item.json.text;\n  if (item.json.errors) output.errors = item.json.errors;\n  if (item.json.image) output.image = item.json.image;\n}\n\nreturn [{ json: output }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1888,
+        -128
+      ],
+      "id": "34492d9e-f3f1-4d66-8aed-cf56fc19b17b",
+      "name": "Code in JavaScript3"
+    },
+    {
+      "parameters": {
+        "formTitle": "data0",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "data0",
+              "fieldType": "file"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.3,
+      "position": [
+        -144,
+        -304
+      ],
+      "id": "a3e14853-d607-4e31-8710-880d418cbf2c",
+      "name": "On form submission",
+      "webhookId": "<REDACTED_WEBHOOK_ID>"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code Node - Extract errors + coordinates and produce compact highlight prompt\n\nconst inputData = $input.all();\n\n// Utility: normalize text for comparison\nfunction normalize(s) {\n  if (!s) return '';\n  return s\n    .toString()\n    .replace(/\\s+/g, ' ')\n    .replace(/[“”\"']/g, '')\n    .replace(/[^\\w\\s]/g, '')\n    .trim()\n    .toLowerCase();\n}\n\n// Normalize bounding box formats into {x,y,w,h}\n// Accepts forms: {x,y,w,h} or {left,top,width,height} or [x1,y1,x2,y2]\nfunction normalizeBox(box) {\n  if (!box) return null;\n  if (Array.isArray(box) && box.length === 4) {\n    const [x1, y1, x2, y2] = box;\n    return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };\n  }\n  if (box.x !== undefined && box.y !== undefined && box.w !== undefined && box.h !== undefined) {\n    return { x: box.x, y: box.y, w: box.w, h: box.h };\n  }\n  if (box.left !== undefined && box.top !== undefined && box.width !== undefined && box.height !== undefined) {\n    return { x: box.left, y: box.top, w: box.width, h: box.height };\n  }\n  // try other common property names\n  if (box.x1 !== undefined && box.y1 !== undefined && box.x2 !== undefined && box.y2 !== undefined) {\n    return { x: box.x1, y: box.y1, w: box.x2 - box.x1, h: box.y2 - box.y1 };\n  }\n  return null;\n}\n\n// Merge multiple boxes (array of {x,y,w,h}) into a bounding box\nfunction mergeBoxes(boxes) {\n  if (!boxes || boxes.length === 0) return null;\n  let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;\n  for (const b of boxes) {\n    if (!b) continue;\n    x1 = Math.min(x1, b.x);\n    y1 = Math.min(y1, b.y);\n    x2 = Math.max(x2, b.x + b.w);\n    y2 = Math.max(y2, b.y + b.h);\n  }\n  return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };\n}\n\n// Try to locate phrase in OCR tokens\n// Assumes tokens = [{text, bbox}] where bbox can be various formats\nfunction findCoordsByPhrase(phrase, tokens) {\n  if (!phrase || !tokens || tokens.length === 0) return null;\n\n  const normPhrase = normalize(phrase);\n  const phraseWords = normPhrase.split(' ').filter(Boolean);\n\n  // Build normalized tokens array and their boxes\n  const normTokens = tokens.map(t => ({\n    text: (t.text || t.word || t.value || '').toString(),\n    norm: normalize(t.text || t.word || t.value || ''),\n    bbox: normalizeBox(t.bbox || t.box || t.boundingBox || t.coords || t.poly)\n  }));\n\n  // 1) Try exact contiguous token sequence match\n  for (let i = 0; i <= normTokens.length - phraseWords.length; i++) {\n    let match = true;\n    const matchedBoxes = [];\n    for (let j = 0; j < phraseWords.length; j++) {\n      if (normTokens[i + j].norm !== phraseWords[j]) {\n        match = false;\n        break;\n      }\n      matchedBoxes.push(normTokens[i + j].bbox);\n    }\n    if (match) {\n      const merged = mergeBoxes(matchedBoxes.filter(Boolean));\n      if (merged) return merged;\n    }\n  }\n\n  // 2) Try substring scanning: token.norm contains phrase\n  for (const t of normTokens) {\n    if (!t.norm) continue;\n    if (t.norm.includes(normPhrase) || normPhrase.includes(t.norm)) {\n      if (t.bbox) return t.bbox;\n    }\n  }\n\n  // 3) Fuzzy: count overlapping words and take highest match\n  let best = { score: 0, boxes: [] };\n  for (let i = 0; i < normTokens.length; i++) {\n    let score = 0;\n    const boxes = [];\n    for (let j = 0; j < phraseWords.length && (i + j) < normTokens.length; j++) {\n      if (normTokens[i + j].norm === phraseWords[j]) {\n        score++;\n        boxes.push(normTokens[i + j].bbox);\n      } else if ((normTokens[i + j].norm || '').includes(phraseWords[j]) || phraseWords[j].includes((normTokens[i + j].norm || ''))) {\n        score += 0.5;\n        boxes.push(normTokens[i + j].bbox);\n      } else {\n        // allow small gaps but break if long mismatch\n        if (j > 2) break;\n      }\n    }\n    if (score > best.score) {\n      best.score = score;\n      best.boxes = boxes;\n    }\n  }\n  if (best.score > 0) {\n    const merged = mergeBoxes(best.boxes.filter(Boolean));\n    if (merged) return merged;\n  }\n\n  // No coordinate found\n  return null;\n}\n\n// Map error types to colors\nconst colorMap = {\n  'Spelling': 'red',\n  'Grammar': 'blue',\n  'Typo': 'green',\n  'Punctuation': 'orange',\n  'Spacing' : 'brown',\n  'Consistency': 'purple'\n};\n\nconst outputItems = inputData.map(item => {\n  const jsonData = item.json;\n  const data = Array.isArray(jsonData) ? jsonData[0] : jsonData || {};\n\n  // Attempt to find OCR tokens in various likely keys\n  const ocrCandidates = [\n    data.ocrTokens,\n    data.ocr,\n    data.tokens,\n    data.extractedTokens,\n    data.textTokens,\n    data.words,\n    data.lines\n  ].filter(Boolean);\n\n  // Flatten tokens if nested\n  let tokens = [];\n  if (ocrCandidates.length) {\n    // if some candidate is an array take the first non-empty\n    const candidate = ocrCandidates.find(c => Array.isArray(c) && c.length > 0) || ocrCandidates[0];\n    tokens = Array.isArray(candidate) ? candidate : [];\n  }\n\n  const errors = data.errorsAndCorrections || data.errors || [];\n\n  const errors_extracted = errors.map(err => {\n    const found_text = err.found_text || err.text || err.incorrect || err.original || '';\n    const corrected_text = err.corrected_text || err.correction || err.suggested || '';\n    const issue_description = err.issue_description || err.note || '';\n    const error_type = err.error_type || err.type || 'Unknown';\n    const id = err.error_id || err.id || null;\n\n    // 1) If coordinates present on the error item use them\n    const possibleBox = normalizeBox(err.coords || err.bbox || err.box || err.boundingBox || err.coordinates);\n    let coords = possibleBox || null;\n\n    // 2) If not present, attempt to find in tokens\n    if (!coords && tokens && tokens.length > 0) {\n      const found = findCoordsByPhrase(found_text, tokens);\n      coords = found;\n    }\n\n    // 3) Normalize coords to null if invalid\n    if (coords && (!isFinite(coords.x) || !isFinite(coords.y) || !isFinite(coords.w) || !isFinite(coords.h))) {\n      coords = null;\n    }\n\n    return {\n      error_id: id,\n      found_text,\n      corrected_text,\n      issue_description,\n      error_type,\n      color: colorMap[error_type] || 'yellow',\n      coords // {x,y,w,h} or null\n    };\n  });\n\n  // Build short editor prompt\n  // If all have coords -> concise coordinate-based instructions\n  const allHaveCoords = errors_extracted.every(e => e.coords);\n  let editor_prompt = '';\n  if (errors_extracted.length === 0) {\n    editor_prompt = 'No errors found in input.';\n  } else if (allHaveCoords) {\n    editor_prompt = 'Highlight the following words using the given coordinates and color (format: x,y,w,h,color,label):\\n';\n    editor_prompt += errors_extracted.map(e => {\n      return `${Math.round(e.coords.x)},${Math.round(e.coords.y)},${Math.round(e.coords.w)},${Math.round(e.coords.h)},${e.color},#${e.error_id || 'NA'},\"${e.found_text}\"`;\n    }).join('\\n');\n  } else {\n    // Mixed or no coords: instruct a hybrid approach\n    editor_prompt = 'For each item below, either use the provided coordinates to highlight the word, or locate and highlight the exact phrase in the image text if coordinates are null.\\n\\n';\n    editor_prompt += errors_extracted.map(e => {\n      if (e.coords) {\n        return `#${e.error_id || 'NA'}: \"${e.found_text}\" — COORDS: ${Math.round(e.coords.x)},${Math.round(e.coords.y)},${Math.round(e.coords.w)},${Math.round(e.coords.h)} — COLOR: ${e.color}`;\n      } else {\n        return `#${e.error_id || 'NA'}: \"${e.found_text}\" — COORDS: null — Please find the exact phrase and highlight it — COLOR: ${e.color}`;\n      }\n    }).join('\\n');\n  }\n\n  return {\n    json: {\n      errors_extracted,\n      total_errors: errors_extracted.length,\n      all_have_coords: allHaveCoords,\n      editor_prompt\n    }\n  };\n});\n\nreturn outputItems;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        576,
+        -432
+      ],
+      "id": "7b8bd171-1558-450e-9ecf-fab449db9f45",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        784,
+        -240
+      ],
+      "id": "c6f320df-e126-4107-bcd1-b6aa74774246",
+      "name": "Merge1"
+    }
+  ],
+  "connections": {
+    "Edit image as per analysis": {
+      "main": [
+        []
+      ]
+    },
+    "Analyze image1": {
+      "main": [
+        [
+          {
+            "node": "Extract necessary details1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript2": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract necessary details1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Edit image as per analysis1": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript3": {
+      "main": [
+        []
+      ]
+    },
+    "On form submission": {
+      "main": [
+        [
+          {
+            "node": "Analyze image1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge1": {
+      "main": [
+        [
+          {
+            "node": "Edit image as per analysis1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "pinData": {
+    "On form submission": [
+      {
+        "json": {
+          "data0": [
+            {
+              "filename": "unnamed-2.jpg",
+              "mimetype": "image/jpeg",
+              "size": 1328125
+            }
+          ],
+          "submittedAt": "2025-12-26T11:20:04.024+05:30",
+          "formMode": "test"
+        },
+        "binary": {
+          "data0": {
+            "mimeType": "image/jpeg",
+            "fileType": "image",
+            "fileExtension": "jpg",
+            "data": "filesystem-v2",
+            "fileName": "unnamed-2.jpg",
+            "id": "filesystem-v2:workflows/0ORbpdPgSceZj1wk/executions/temp/binary_data/5964efa7-bc9e-486c-a48f-16af781afa15",
+            "fileSize": "1.33 MB"
+          }
+        }
+      }
+    ]
+  },
+  "triggerCount": 1,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}
